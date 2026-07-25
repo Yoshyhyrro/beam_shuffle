@@ -1,0 +1,62 @@
+name: Elixir CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build & Run Simulation Engine
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        otp: ['26.2']
+        elixir: ['1.16']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+          version-type: strict
+
+      - name: Restore dependencies & build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            deps
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Install dependencies (if mix.exs exists)
+        run: |
+          if [ -f "mix.exs" ]; then
+            mix local.hex --force
+            mix local.rebar --force
+            mix deps.get
+          fi
+
+      - name: Validate and Execute Quantum Simulation Script (idea.exs)
+        run: |
+          echo "=== Executing idea.exs on BEAM VM ==="
+          elixir idea.exs
+
+      # Project-level compilation and test pipeline (enabled if mix.exs is present)
+      - name: Run Mix Compile & Tests
+        run: |
+          if [ -f "mix.exs" ]; then
+            mix compile --warnings-as-errors
+            mix test
+          fi
