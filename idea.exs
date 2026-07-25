@@ -15,13 +15,14 @@ defmodule QuantumSimulation.HeptadecagonShuffleProduct do
   @group_order 17
   @scale 10_000  # Fixed-point precision multiplier for complex amplitudes
 
-  # Memory layout for :atomics: 17 complex amplitudes + 1 normalization constant + 1 global phase
-  @amp_offset 0
-  @norm_index 34
-  @phase_index 35
+  # Memory layout for :atomics (1-based indexing):
+  # 34 elements (17 complex pairs) + 1 norm + 1 phase = 36 total elements
+  @amp_offset 1
+  @norm_index 35
+  @phase_index 36
   @total_atomics 36
 
-  # Memory layout for :counters: 17 basis states + 1 total aggregate count
+  # Memory layout for :counters (1-based indexing): 17 basis states + 1 total aggregate count
   @counter_total 17
   @total_counters 18
 
@@ -33,22 +34,21 @@ defmodule QuantumSimulation.HeptadecagonShuffleProduct do
   Initializes a novel 17-gon quantum state, defaulting all amplitudes to zero.
   """
   def new_quantum_state do
-    # Note: :atomics.new/2 takes an empty list [] for default options as :write_concurrency is invalid here
     atomics = :atomics.new(@total_atomics, [])
 
-    # Initialize strictly to the |0⟩ state
-    :atomics.put(atomics, @amp_offset + 0, @scale)      # Real part of |0⟩ = 1.0
-    :atomics.put(atomics, @amp_offset + 1, 0)           # Imaginary part of |0⟩ = 0.0
+    # Initialize strictly to the |0⟩ state (Erlang :atomics is 1-based)
+    :atomics.put(atomics, @amp_offset + 0, @scale)      # Real part of |0⟩ = 1.0 (Index 1)
+    :atomics.put(atomics, @amp_offset + 1, 0)           # Imaginary part of |0⟩ = 0.0 (Index 2)
 
-    # Ensure all subsequent amplitudes remain zero
-    for i <- 2..(@total_atomics - 3) do
+    # Ensure all subsequent amplitudes remain zero (Indices 3 to 34)
+    for i <- (@amp_offset + 2)..(@norm_index - 1) do
       :atomics.put(atomics, i, 0)
     end
 
-    # Establish the normalization constant
+    # Establish the normalization constant (Index 35)
     :atomics.put(atomics, @norm_index, @scale * @scale)
 
-    # Reset the global phase
+    # Reset the global phase (Index 36)
     :atomics.put(atomics, @phase_index, 0)
 
     atomics
