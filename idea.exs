@@ -1,24 +1,27 @@
-defmodule HeptadecagonShuffleProduct do
+defmodule QuantumSimulation.HeptadecagonShuffleProduct do
   @moduledoc """
-  Implements shuffle product on a 17-cycle using :atomics for complex amplitudes
-  and :counters for probability distribution tracking.
+  Implements the shuffle product on a 17-cycle using `:atomics` for complex amplitudes
+  and `:counters` for probability distribution tracking.
 
   Mathematical properties:
   - Group: C₁₇ (cyclic group of order 17)
-  - Shuffle product = convolution on Z₁₇
-  - Quantum walk: X = S · (I ⊗ C) with 17 positions
+  - Shuffle product: Convolution on Z₁₇
+  - Quantum walk: X = S · (I ⊗ C) across 17 distinct positions
   """
 
-  @group_order 17
-  @scale 10_000  # Fixed-point precision for amplitudes
+  # Imports the Erlang math module functions to omit the `:math.` prefix.
+  import :math, only: [sqrt: 1, log: 1, pi: 0, cos: 1, sin: 1]
 
-  # :atomics layout: 17 complex amplitudes + 1 normalization + 1 phase
+  @group_order 17
+  @scale 10_000  # Fixed-point precision multiplier for complex amplitudes
+
+  # Memory layout for :atomics: 17 complex amplitudes + 1 normalization constant + 1 global phase
   @amp_offset 0
   @norm_index 34
   @phase_index 35
   @total_atomics 36
 
-  # :counters layout: 17 basis states + total count
+  # Memory layout for :counters: 17 basis states + 1 total aggregate count
   @counter_states 17
   @counter_total 17
   @total_counters 18
@@ -28,31 +31,32 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Creates a new 17-gon quantum state with all amplitudes zero.
+  Initializes a novel 17-gon quantum state, defaulting all amplitudes to zero.
   """
   def new_quantum_state do
     atomics = :atomics.new(@total_atomics, [:write_concurrency])
 
-    # Initialize to |0⟩ state
+    # Initialize strictly to the |0⟩ state
     :atomics.put(atomics, @amp_offset + 0, @scale)      # Real part of |0⟩ = 1.0
-    :atomics.put(atomics, @amp_offset + 1, 0)           # Imag part of |0⟩ = 0.0
+    :atomics.put(atomics, @amp_offset + 1, 0)           # Imaginary part of |0⟩ = 0.0
 
-    # All other amplitudes zero
+    # Ensure all subsequent amplitudes remain zero
     for i <- 2..(@total_atomics - 3) do
       :atomics.put(atomics, i, 0)
     end
 
-    # Normalization constant
+    # Establish the normalization constant
     :atomics.put(atomics, @norm_index, @scale * @scale)
 
-    # Global phase = 0
+    # Reset the global phase
     :atomics.put(atomics, @phase_index, 0)
 
     atomics
   end
 
   @doc """
-  Creates a new counter array for measurement statistics.
+  Allocates a concurrent counter array strictly for measurement statistics.
+  Note: Erlang's `:counters` utilizes 1-based indexing.
   """
   def new_counters do
     :counters.new(@total_counters, [:write_concurrency])
@@ -63,7 +67,7 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Gets the complex amplitude for basis state |k⟩ as {real, imag}.
+  Retrieves the complex amplitude associated with the basis state |k⟩ as a {real, imag} tuple.
   """
   def get_amplitude(atomics, k) when k in 0..(@group_order - 1) do
     idx_real = @amp_offset + 2 * k
@@ -75,8 +79,8 @@ defmodule HeptadecagonShuffleProduct do
   end
 
   @doc """
-  Sets the complex amplitude for basis state |k⟩ atomically.
-  Returns :ok on success, :error on CAS failure.
+  Atomically dictates the complex amplitude for basis state |k⟩.
+  Returns `:ok` upon successful Compare-And-Swap (CAS), or `:error` upon contention failure.
   """
   def set_amplitude(atomics, k, real, imag) when k in 0..(@group_order - 1) do
     idx_real = @amp_offset + 2 * k
@@ -85,7 +89,7 @@ defmodule HeptadecagonShuffleProduct do
     real_scaled = round(real * @scale)
     imag_scaled = round(imag * @scale)
 
-    # Use CAS for consistency
+    # Leverage CAS to guarantee atomic consistency
     with :ok <- :atomics.compare_exchange(
            atomics, idx_real,
            :atomics.get(atomics, idx_real),
@@ -96,7 +100,6 @@ defmodule HeptadecagonShuffleProduct do
            :atomics.get(atomics, idx_imag),
            imag_scaled
          ) do
-      # Update normalization
       update_normalization(atomics)
       :ok
     else
@@ -104,28 +107,33 @@ defmodule HeptadecagonShuffleProduct do
     end
   end
 
+  # Internal function to maintain the normalization factor
+  defp update_normalization(atomics) do
+    total_prob =
+      Enum.reduce(0..(@group_order - 1), 0.0, fn k, acc ->
+        {r, i} = get_amplitude(atomics, k)
+        acc + r * r + i * i
+      end)
+
+    :atomics.put(atomics, @norm_index, round(total_prob * @scale * @scale))
+  end
+
   # ===========================================================================
   # 3. SHUFFLE PRODUCT OPERATIONS
   # ===========================================================================
 
   @doc """
-  Applies the shuffle product (convolution) of the current state with itself.
-  This generates the 2-step quantum walk distribution.
-
-  Mathematically:
-    (ψ * ψ)(k) = Σ_{i+j ≡ k mod 17} ψ(i)ψ(j)
-
-  The operation is atomic and uses a snapshot to avoid race conditions.
+  Executes the shuffle product (convolution) mapping the current state onto itself.
+  This functionally generates the two-step quantum walk distribution.
   """
   def self_shuffle(atomics) do
-    # Snapshot current amplitudes
+    # Snapshot the current amplitudes to mitigate race conditions
     amps =
-      for k <- 0..(@group_order - 1) do
+      for k <- 0..(@group_order - 1), into: %{} do
         {k, get_amplitude(atomics, k)}
       end
-      |> Map.new()
 
-    # Compute convolution: new_amp(k) = Σ_{i} amp(i) * amp((k-i) mod 17)
+    # Calculate convolution: new_amp(k) = Σ_{i} amp(i) * amp((k-i) mod 17)
     new_amps =
       for k <- 0..(@group_order - 1) do
         sum =
@@ -134,7 +142,7 @@ defmodule HeptadecagonShuffleProduct do
             j = rem(k - i + @group_order, @group_order)
             {r2, i2} = amps[j]
 
-            # Complex multiplication: (r1 + i i1) * (r2 + i i2)
+            # Complex scalar multiplication: (r1 + i i1) * (r2 + i i2)
             {
               acc_r + (r1 * r2 - i1 * i2),
               acc_i + (r1 * i2 + i1 * r2)
@@ -144,7 +152,7 @@ defmodule HeptadecagonShuffleProduct do
         {k, sum}
       end
 
-    # Atomically update all amplitudes
+    # Atomically overwrite all amplitudes
     Enum.reduce_while(new_amps, :ok, fn {k, {r, i}}, _acc ->
       case set_amplitude(atomics, k, r, i) do
         :ok -> {:cont, :ok}
@@ -154,28 +162,13 @@ defmodule HeptadecagonShuffleProduct do
   end
 
   @doc """
-  Applies the shuffle product of two distinct states.
-
-  Given two atomic arrays state_a and state_b, computes:
-    (ψ_a * ψ_b)(k) = Σ_{i+j ≡ k mod 17} ψ_a(i)ψ_b(j)
-
-  Returns a new atomic array containing the result.
+  Computes the shuffle product mapping over two discrete quantum states.
+  Returns a freshly allocated atomic array encompassing the resultant state.
   """
   def shuffle_product(atomics_a, atomics_b) do
-    # Snapshot both states
-    amps_a =
-      for k <- 0..(@group_order - 1) do
-        {k, get_amplitude(atomics_a, k)}
-      end
-      |> Map.new()
+    amps_a = for k <- 0..(@group_order - 1), into: %{}, do: {k, get_amplitude(atomics_a, k)}
+    amps_b = for k <- 0..(@group_order - 1), into: %{}, do: {k, get_amplitude(atomics_b, k)}
 
-    amps_b =
-      for k <- 0..(@group_order - 1) do
-        {k, get_amplitude(atomics_b, k)}
-      end
-      |> Map.new()
-
-    # Compute convolution
     result = new_quantum_state()
 
     for k <- 0..(@group_order - 1) do
@@ -202,72 +195,54 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Performs one step of the quantum walk on the 17-gon.
-  Uses the Hadamard coin and shift operator.
-
-  The unitary step is: U = S · (I ⊗ C) where:
-    - C = Hadamard coin: |0⟩ → (|0⟩+|1⟩)/√2, |1⟩ → (|0⟩-|1⟩)/√2
-    - S = Shift: |k⟩|0⟩ → |k-1⟩|0⟩, |k⟩|1⟩ → |k+1⟩|1⟩
-
-  The shuffle product emerges from the reduced density matrix.
+  Executes a singular discrete-time quantum walk iteration across the 17-gon structure.
+  Integrates the Hadamard coin and conditional shift operators.
   """
   def quantum_walk_step(atomics, counters \\ nil) do
-    # Snapshot current amplitudes
-    amps =
-      for k <- 0..(@group_order - 1) do
-        {k, get_amplitude(atomics, k)}
-      end
-      |> Map.new()
+    amps = for k <- 0..(@group_order - 1), into: %{}, do: {k, get_amplitude(atomics, k)}
 
-    # Apply Hadamard coin to each position
-    # For each k, create entangled coin state: |k⟩(H|0⟩)
+    # Apply the Hadamard coin operator onto each spatial node
     coin_amps =
       for k <- 0..(@group_order - 1) do
         {r, i} = amps[k]
-
-        # H|0⟩ = (|0⟩ + |1⟩)/√2
-        sqrt2 = :math.sqrt(2.0)
+        sqrt2 = sqrt(2.0)
         {
           k,
-          {r / sqrt2, i / sqrt2},  # |0⟩ coin component
-          {r / sqrt2, i / sqrt2}   # |1⟩ coin component
+          {r / sqrt2, i / sqrt2},  # Sub-component mapped to |0⟩
+          {r / sqrt2, i / sqrt2}   # Sub-component mapped to |1⟩
         }
       end
 
-    # Apply shift operator S
-    # |k⟩|0⟩ → |k-1⟩|0⟩, |k⟩|1⟩ → |k+1⟩|1⟩
+    # Apply the conditional shift operator S
     new_amps =
       Enum.reduce(coin_amps, %{}, fn {k, {r0, i0}, {r1, i1}}, acc ->
-        # Shift |0⟩ component to k-1
         k_minus = rem(k - 1 + @group_order, @group_order)
         acc =
           Map.update(acc, k_minus, {r0, i0}, fn {ar, ai} ->
             {ar + r0, ai + i0}
           end)
 
-        # Shift |1⟩ component to k+1
         k_plus = rem(k + 1, @group_order)
         Map.update(acc, k_plus, {r1, i1}, fn {ar, ai} ->
           {ar + r1, ai + i1}
         end)
       end)
 
-    # Normalize and update atomically
+    # Enforce unitary normalization post-shift
     total_prob =
       Enum.reduce(new_amps, 0.0, fn {_, {r, i}}, acc ->
-        acc + r*r + i*i
+        acc + r * r + i * i
       end)
 
-    norm_factor = 1.0 / :math.sqrt(total_prob)
+    norm_factor = 1.0 / sqrt(total_prob)
 
     Enum.each(new_amps, fn {k, {r, i}} ->
       set_amplitude(atomics, k, r * norm_factor, i * norm_factor)
     end)
 
-    # Record measurement statistics if counters provided
+    # Persist measurement statistics when a counter telemetry module is injected
     if counters do
       probs = get_probabilities(atomics)
-      # Measure according to Born rule
       measure_and_record(atomics, counters, probs)
     end
 
@@ -279,8 +254,7 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Performs a projective measurement in the position basis.
-  Returns the measured state index.
+  Executes a projective measurement collapsed onto the position basis via the Born rule.
   """
   def measure(atomics) do
     probs = get_probabilities(atomics)
@@ -296,7 +270,7 @@ defmodule HeptadecagonShuffleProduct do
         end
       end)
 
-    # Collapse to measured state
+    # Collapse the superposition strictly to the measured eigenstate
     for k <- 0..(@group_order - 1) do
       if k == measured_state do
         set_amplitude(atomics, k, 1.0, 0.0)
@@ -309,26 +283,26 @@ defmodule HeptadecagonShuffleProduct do
   end
 
   @doc """
-  Computes probability distribution from atomic amplitudes.
-  Returns a map of state -> probability.
+  Derives the classical probability distribution strictly from the underlying atomic amplitudes.
   """
   def get_probabilities(atomics) do
     total =
       Enum.reduce(0..(@group_order - 1), 0.0, fn k, acc ->
         {r, i} = get_amplitude(atomics, k)
-        acc + r*r + i*i
+        acc + r * r + i * i
       end)
 
     for k <- 0..(@group_order - 1), into: %{} do
       {r, i} = get_amplitude(atomics, k)
-      {k, (r*r + i*i) / total}
+      {k, (r * r + i * i) / total}
     end
   end
 
-  defp measure_and_record(atomics, counters, probs) do
+  defp measure_and_record(atomics, counters, _probs) do
     state = measure(atomics)
-    :counters.add(counters, state, 1)
-    :counters.add(counters, @counter_total, 1)
+    # Erlang :counters arrays strictly require 1-based indexing
+    :counters.add(counters, state + 1, 1)
+    :counters.add(counters, @counter_total + 1, 1)
     state
   end
 
@@ -337,8 +311,7 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Computes the Shannon entropy of the probability distribution.
-  This measures the "shuffling entropy" of the 17-gon.
+  Quantifies the Shannon entropy bounded by the derived probability distribution.
   """
   def shuffle_entropy(atomics) do
     probs = get_probabilities(atomics)
@@ -346,62 +319,48 @@ defmodule HeptadecagonShuffleProduct do
     probs
     |> Map.values()
     |> Enum.filter(&(&1 > 0))
-    |> Enum.map(fn p -> -p * :math.log(p) end)
+    |> Enum.map(fn p -> -p * log(p) end)
     |> Enum.sum()
   end
 
   @doc """
-  Computes the Fourier transform of the shuffle product.
-  For C₁₇, this diagonalizes the convolution operator.
-
-  Returns a list of 17 eigenvalues λ_k.
+  Applies the Discrete Fourier Transform (DFT) mapping over the shuffle product topology.
+  For C₁₇, this inherently diagonalizes the convolution operator matrix.
   """
   def fourier_eigenvalues(atomics) do
     probs = get_probabilities(atomics)
 
     for m <- 0..(@group_order - 1) do
-      # λ_m = Σ_{k=0}^{16} P(k) * ω^{mk}
-      # where ω = exp(2πi/17)
+      # λ_m = Σ_{k=0}^{16} P(k) * ω^{mk}  | where ω = exp(2πi/17)
       Enum.reduce(0..(@group_order - 1), {0.0, 0.0}, fn k, {acc_r, acc_i} ->
-        theta = 2 * :math.pi() * m * k / @group_order
+        theta = 2 * pi() * m * k / @group_order
         p = Map.get(probs, k, 0.0)
         {
-          acc_r + p * :math.cos(theta),
-          acc_i + p * :math.sin(theta)
+          acc_r + p * cos(theta),
+          acc_i + p * sin(theta)
         }
       end)
     end
   end
 
   @doc """
-  Checks if the shuffle product is idempotent.
-  In group algebra, μ * μ = μ iff μ is a uniform distribution.
+  Evaluates whether the topological shuffle product converges idiopathically (idempotency).
   """
-  def is_idempotent(atomics, tolerance \\ 1.0e-6) do
-    # Compute μ * μ
+  def idempotent?(atomics, tolerance \\ 1.0e-6) do
     shuffled = self_shuffle_copy(atomics)
 
-    # Compare with original
-    for k <- 0..(@group_order - 1) do
+    # Validates matrix congruence within defined floating-point error bounds
+    Enum.all?(0..(@group_order - 1), fn k ->
       {r1, i1} = get_amplitude(atomics, k)
       {r2, i2} = get_amplitude(shuffled, k)
 
-      if abs(r1 - r2) > tolerance or abs(i1 - i2) > tolerance do
-        return false
-      end
-    end
-
-    true
+      abs(r1 - r2) <= tolerance and abs(i1 - i2) <= tolerance
+    end)
   end
 
   defp self_shuffle_copy(atomics) do
     result = new_quantum_state()
-
-    amps =
-      for k <- 0..(@group_order - 1) do
-        {k, get_amplitude(atomics, k)}
-      end
-      |> Map.new()
+    amps = for k <- 0..(@group_order - 1), into: %{}, do: {k, get_amplitude(atomics, k)}
 
     for k <- 0..(@group_order - 1) do
       sum =
@@ -427,20 +386,19 @@ defmodule HeptadecagonShuffleProduct do
   # ===========================================================================
 
   @doc """
-  Runs a concurrent shuffle simulation on the 17-gon.
-  Multiple processes can independently apply shuffle operations.
+  Bootstraps and orchestrates the parallel shuffle engine simulation across the 17-gon topology.
   """
   def concurrent_shuffle_simulation(num_steps, num_workers) do
     atomics = new_quantum_state()
     counters = new_counters()
 
-    # Initialize to uniform superposition
-    init_amp = 1.0 / :math.sqrt(@group_order)
+    # Distribute the initial state into a uniform superposition manifold
+    init_amp = 1.0 / sqrt(@group_order)
     for k <- 0..(@group_order - 1) do
       set_amplitude(atomics, k, init_amp, 0.0)
     end
 
-    # Spawn workers
+    # Bootstrap the concurrency pool mapping independent random walks
     workers =
       for _ <- 1..num_workers do
         spawn(fn ->
@@ -453,7 +411,7 @@ defmodule HeptadecagonShuffleProduct do
         end)
       end
 
-    # Wait for all workers
+    # Block main thread until worker pipeline convergence
     Enum.each(workers, fn pid ->
       ref = Process.monitor(pid)
       receive do
@@ -461,16 +419,15 @@ defmodule HeptadecagonShuffleProduct do
       end
     end)
 
-    # Collect results
+    # Aggregate telemetry payloads post-execution
     probs = get_probabilities(atomics)
     entropy = shuffle_entropy(atomics)
     eigenvals = fourier_eigenvalues(atomics)
 
-    # Read counter statistics
-    total_measurements = :counters.get(counters, @counter_total)
+    total_measurements = :counters.get(counters, @counter_total + 1)
     measured_probs =
       for k <- 0..(@group_order - 1), into: %{} do
-        count = :counters.get(counters, k)
+        count = :counters.get(counters, k + 1)
         {k, if(total_measurements > 0, do: count / total_measurements, else: 0.0)}
       end
 
@@ -485,3 +442,29 @@ defmodule HeptadecagonShuffleProduct do
     }
   end
 end
+
+# ===========================================================================
+# EXECUTION SCRIPT FOR idea.exs
+# ===========================================================================
+alias QuantumSimulation.HeptadecagonShuffleProduct, as: ShuffleProduct
+
+IO.puts("=== Initializing Heptadecagon Shuffle Product Simulation ===")
+
+num_steps = 10
+num_workers = 4
+
+IO.puts("Dispatching #{num_workers} concurrent workers for #{num_steps} simulation steps...")
+result = ShuffleProduct.concurrent_shuffle_simulation(num_steps, num_workers)
+
+IO.puts("\n=== Simulation Telemetry ===")
+IO.puts("Total Born Rule Measurements : #{result.total_measurements}")
+IO.puts("Final Shannon Entropy        : #{Float.round(result.entropy, 5)}")
+
+IO.puts("\n=== Measured Probability Distribution ===")
+Enum.each(result.measured_probabilities, fn {state, prob} ->
+  formatted_prob = :erlang.float_to_binary(prob, decimals: 4)
+  state_str = String.pad_leading(Integer.to_string(state), 2)
+  IO.puts("State |#{state_str}> : #{formatted_prob}")
+end)
+
+IO.puts("\nSimulation successfully concluded.")
