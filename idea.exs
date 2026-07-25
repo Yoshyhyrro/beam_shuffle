@@ -22,7 +22,6 @@ defmodule QuantumSimulation.HeptadecagonShuffleProduct do
   @total_atomics 36
 
   # Memory layout for :counters: 17 basis states + 1 total aggregate count
-  @counter_states 17
   @counter_total 17
   @total_counters 18
 
@@ -34,7 +33,8 @@ defmodule QuantumSimulation.HeptadecagonShuffleProduct do
   Initializes a novel 17-gon quantum state, defaulting all amplitudes to zero.
   """
   def new_quantum_state do
-    atomics = :atomics.new(@total_atomics, [:write_concurrency])
+    # Note: :atomics.new/2 takes an empty list [] for default options as :write_concurrency is invalid here
+    atomics = :atomics.new(@total_atomics, [])
 
     # Initialize strictly to the |0⟩ state
     :atomics.put(atomics, @amp_offset + 0, @scale)      # Real part of |0⟩ = 1.0
@@ -56,7 +56,7 @@ defmodule QuantumSimulation.HeptadecagonShuffleProduct do
 
   @doc """
   Allocates a concurrent counter array strictly for measurement statistics.
-  Note: Erlang's `:counters` utilizes 1-based indexing.
+  Note: Erlang's `:counters` utilizes 1-based indexing and supports [:write_concurrency].
   """
   def new_counters do
     :counters.new(@total_counters, [:write_concurrency])
